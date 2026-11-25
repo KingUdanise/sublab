@@ -5,7 +5,7 @@ const toHex = (rgb) => "#" + rgb.map((v) => Math.round(clamp(v, 0, 1) * 255).toS
 const fromHex = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
 const norm = (s) => (s || "").toLowerCase().replace(/[\s_\-.]/g, "");
 const fontEntry = (name) => S.fonts.find((f) => (f.key || norm(f.family)) === norm(name));
-const faceName = (fam) => "sublab_" + (fam.key || norm(fam.family));
+const faceName = (fam, style) => "sublab_" + (fam.key || norm(fam.family)) + "_" + norm(style || "Regular");
 
 const S = {
   info: null,
@@ -31,9 +31,11 @@ async function postJSON(url, body) {
   return getJSON(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 }
 const tc = (frame, fps) => {
-  const s = frame / fps;
-  const f = Math.round(frame % fps);
-  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}.${String(f).padStart(2, "0")}`;
+  const fpsI = Math.max(1, Math.round(fps || 24));
+  const f = Math.max(0, Math.round(frame));
+  const s = Math.floor(f / fpsI);
+  const ff = f % fpsI;
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}.${String(ff).padStart(2, "0")}`;
 };
 
 /* ------------------------------------------------------------------ init */
@@ -165,12 +167,13 @@ async function ensureFont() {
   const style = S.style.font_style || "Regular";
   const file = fam.files[style] || fam.files["Regular"] || Object.values(fam.files)[0];
   if (!file) return;
-  if (S.fontFaces.has(file)) return;
+  const face = faceName(fam, style);
+  if (S.fontFaces.has(face)) return;
   try {
-    const ff = new FontFace(faceName(fam), `url(/fonts/${encodeURIComponent(file)})`);
+    const ff = new FontFace(face, `url(/fonts/${encodeURIComponent(file)})`);
     await ff.load();
     document.fonts.add(ff);
-    S.fontFaces.add(file);
+    S.fontFaces.add(face);
   } catch (e) {
     console.warn("font non caricabile", file, e);
   }
@@ -294,7 +297,7 @@ function layout(ctx, text, W, maxWidth) {
 function drawSubs(ctx, W, H, text, cue) {
   const st = S.style;
   const fam = fontEntry(st.font);
-  const face = fam ? faceName(fam) : `"${st.font}"`;
+  const face = fam ? faceName(fam, st.font_style) : `"${st.font}"`;
   const px = st.size * H;
   ctx.save();
   ctx.font = `${px}px ${face}, "${st.font}", sans-serif`;
@@ -403,7 +406,24 @@ function renderCues() {
     ta.value = c.text;
     ta.rows = 1;
     ta.onfocus = () => { S.activeCue = i; S.t0 = performance.now(); draw(); markActive(); };
-    ta.oninput = () => { c.text = ta.value; scheduleCuesSave(); };
+    ta.oninput = () => {
+      c.text = ta.value;
+      const toks = ta.value.trim().split(/\s+/).filter(Boolean);
+      if (toks.length && Array.isArray(c.words) && c.words.length === toks.length) {
+        c.words = c.words.map((w, idx) => ({ ...w, w: toks[idx] }));
+      } else if (toks.length) {
+        const span = Math.max(1, (c.end || 1) - (c.start || 0));
+        c.words = toks.map((w, idx) => ({
+          w,
+          s: Math.round((c.start || 0) + (span * idx) / toks.length),
+          e: Math.round((c.start || 0) + (span * (idx + 1)) / toks.length),
+        }));
+      } else {
+        c.words = [];
+      }
+      draw();
+      scheduleCuesSave();
+    };
     row.append(cb, t, ta);
     row.onclick = (e) => {
       if (e.target === cb) return;
@@ -466,7 +486,10 @@ async function applyStyle(target) {
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "applico…";
-  const r = await postJSON("/api/apply", { target, style: S.style });
+  const frames = target === "selected"
+    ? [...S.selected].map((idx) => S.cues[idx]?.start).filter((v) => v != null)
+    : undefined;
+  const r = await postJSON("/api/apply", { target, style: S.style, frames });
   btn.textContent = label;
   btn.disabled = false;
   if (r.ok) {
@@ -485,9 +508,13 @@ async function pushToResolve() {
   try {
     const dry = await postJSON("/api/push", { dry_run: true });
     if (!dry.ok) throw new Error(dry.error || "errore");
+    const trackMsg = dry.create_track
+      ? `su una nuova traccia (V${dry.track})`
+      : `sulla traccia esistente (V${dry.track})`;
+    const copyMsg = $("push-copy").checked ? "\nVerra' creata una copia della timeline." : "";
     const ok = confirm(
-      `Inserire ${dry.cues} sottotitoli su una nuova traccia (V${dry.track})?\n` +
-      `Frame ${dry.first} → ${dry.last} (${dry.frames} frame totali).\n\n` +
+      `Inserire ${dry.cues} sottotitoli ${trackMsg}?\n` +
+      `Frame ${dry.first} → ${dry.last} (${dry.frames} frame totali).${copyMsg}\n\n` +
       `I clip SubLab già presenti sulla traccia verranno sostituiti.`);
     if (!ok) { $("log").textContent = "push annullato"; return; }
     const r = await postJSON("/api/push", { dry_run: false, on_copy: $("push-copy").checked });

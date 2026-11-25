@@ -28,6 +28,7 @@ if sys_path not in sys.path:
 
 import asr  # noqa: E402
 import bridge  # noqa: E402
+import cues4  # noqa: E402
 import fonts  # noqa: E402
 
 OUT_DIR = os.path.join(HERE, "out")
@@ -136,6 +137,7 @@ class ApplyBody(BaseModel):
     target: str = "all"          # all | selected
     style: dict | None = None
     only_font: bool = False      # ripara solo Font/Stile senza toccare i colori
+    frames: list[int] | None = None  # start frame dei cue selezionati nella UI
 
 
 @app.post("/api/apply")
@@ -146,10 +148,15 @@ def api_apply(body: ApplyBody):
     try:
         if body.target == "selected":
             t = bridge.timeline()
-            sel = t.GetSelectedClips() or []
-            items = [it for it in sel if bridge._is_subtitle_item(it)]
+            items = []
+            if body.frames:
+                wanted = {int(fr) for fr in body.frames}
+                items = [it for it in bridge.subtitle_items(t) if int(it.GetStart()) in wanted]
             if not items:
-                raise bridge.ResolveError("Nessuna clip sub selezionata in timeline.")
+                sel = t.GetSelectedClips() or []
+                items = [it for it in sel if bridge._is_subtitle_item(it)]
+            if not items:
+                raise bridge.ResolveError("Nessuna clip sub selezionata (né in UI né in timeline).")
         else:
             items = None
         res = bridge.apply_style(style, items)
@@ -183,10 +190,12 @@ def api_still(frame: int | None = None):
 
 
 def _tc(frame: int, fps: float) -> str:
-    f = int(round(frame))
-    ff = f % int(round(fps))
-    s = f / fps
-    return f"{int(s // 3600):02d}:{int(s // 60) % 60:02d}:{int(s % 60):02d}:{ff:02d}"
+    fps_i = max(1, int(round(fps)))
+    f = max(0, int(round(frame)))
+    total_s, ff = divmod(f, fps_i)
+    h, rem = divmod(total_s, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}:{ff:02d}"
 
 
 class TranscribeBody(BaseModel):
@@ -195,6 +204,8 @@ class TranscribeBody(BaseModel):
     language: str | None = "it"
     max_chars: int = 38
     max_dur: float = 2.6
+    max_words: int = cues4.MAX_WORDS
+    use_cues4: bool = True       # usa il motore italiano cues4 (elisioni, no parole appese)
 
 
 class _Job:
@@ -205,6 +216,21 @@ class _Job:
         self.log: list[str] = []
         self.error = None
 
+    def try_start(self) -> bool:
+        with self.lock:
+            if self.state == "running":
+                return False
+            self.state = "running"
+            self.progress = 0.0
+            self.error = None
+            self.log = []
+            return True
+
+    def finish(self, state: str, error: str | None = None):
+        with self.lock:
+            self.state = state
+            self.error = error
+
     def add(self, msg: str, prog: float | None = None):
         with self.lock:
             self.log.append(f"{time.strftime('%H:%M:%S')}  {msg}")
@@ -214,7 +240,7 @@ class _Job:
 
     def snapshot(self):
         with self.lock:
-            return {"state": self.state, "progress": self.progress, "log": self.log, "error": self.error}
+            return {"state": self.state, "progress": self.progress, "log": list(self.log), "error": self.error}
 
 
 JOB = _Job()
@@ -223,17 +249,17 @@ STATE["job"] = JOB.snapshot()
 
 @app.get("/api/job")
 def api_job():
-    STATE["job"] = JOB.snapshot()
-    return STATE["job"]
+    snap = JOB.snapshot()
+    STATE["job"] = snap
+    return snap
 
 
 @app.post("/api/transcribe")
 def api_transcribe(body: TranscribeBody):
-    if JOB.state == "running":
+    if not JOB.try_start():
         return JSONResponse({"ok": False, "error": "trascrizione già in corso"}, status_code=409)
 
     def run():
-        JOB.state, JOB.progress, JOB.error, JOB.log = "running", 0.0, None, []
         try:
             JOB.add(f"range mode = {body.mode}", 0.02)
             start, end, why = bridge.subtitle_range(body.mode)
@@ -253,7 +279,20 @@ def api_transcribe(body: TranscribeBody):
             JOB.add(f"trascritto: {len(res['words'])} parole, lingua {res['language']} "
                     f"({res['device']})", 0.8)
 
-            cues_sec = asr.build_cues(res["words"], max_chars=body.max_chars, max_dur=body.max_dur)
+            warnings: list[str] = []
+            validation_errors: list[dict] = []
+            if body.use_cues4:
+                built = cues4.build(res["words"], fps=f, max_words=body.max_words, max_dur=body.max_dur)
+                cues_sec = built["cues"]
+                warnings = built.get("warnings", [])
+                validation_errors = cues4.errors_only(
+                    cues4.validate(cues_sec, fps=f, max_words=body.max_words, max_dur=body.max_dur)
+                )
+                if warnings:
+                    JOB.add(f"cues4: {len(warnings)} avvisi, {len(validation_errors)} errori residui", 0.9)
+            else:
+                cues_sec = asr.build_cues(res["words"], max_chars=body.max_chars, max_dur=body.max_dur)
+
             cues = asr.cue_frames(cues_sec, f, offset=start / f)
             STATE["cues"] = cues
             STATE["meta"] = {
@@ -263,17 +302,20 @@ def api_transcribe(body: TranscribeBody):
                 "language": res["language"],
                 "model": body.model,
                 "device": res["device"],
+                "engine": "cues4" if body.use_cues4 else "asr",
+                "warnings": warnings,
+                "validation_errors": len(validation_errors),
                 "stats": asr.stats(cues_sec),
                 "audio": audio_path,
             }
             _save_state()
             JOB.add(f"{len(cues)} sottotitoli pronti", 1.0)
-            JOB.state = "done"
+            JOB.finish("done")
         except Exception as e:  # noqa: BLE001
-            JOB.error = f"{type(e).__name__}: {e}"
-            JOB.add("ERRORE: " + JOB.error)
+            err = f"{type(e).__name__}: {e}"
+            JOB.add("ERRORE: " + err)
             traceback.print_exc()
-            JOB.state = "error"
+            JOB.finish("error", err)
 
     threading.Thread(target=run, daemon=True).start()
     return {"ok": True, "job": JOB.snapshot()}
@@ -310,12 +352,29 @@ def api_backup():
     return {"ok": bool(path), "path": path}
 
 
+def _unique_timeline_name(p, base: str) -> str:
+    existing = set()
+    try:
+        for i in range(1, int(p.GetTimelineCount() or 0) + 1):
+            t = p.GetTimelineByIndex(i)
+            if t:
+                existing.add(t.GetName())
+    except Exception:
+        pass
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base} {n}" in existing:
+        n += 1
+    return f"{base} {n}"
+
+
 def duplicate_timeline() -> str | None:
-    """Crea una copia della timeline corrente e ci si sposta sopra (push 'in sicurezza')."""
+    """Crea una copia della timeline corrente con nome univoco e ci si sposta sopra."""
     try:
         p = bridge.project()
         tl = bridge.timeline()
-        name = f"{tl.GetName()} · SubLab"
+        name = _unique_timeline_name(p, f"{tl.GetName()} · SubLab")
         dup = tl.DuplicateTimeline(name)
         if dup is None:
             return None
@@ -339,6 +398,8 @@ def api_push(payload: dict):
         copied = None
         if not dry and payload.get("on_copy"):
             copied = duplicate_timeline()
+            if not copied:
+                raise bridge.ResolveError("Impossibile duplicare la timeline: push annullato per sicurezza.")
         res = push.push_cues(STATE["cues"], _fused_style(STATE["style"]),
                              payload.get("track"), dry_run=dry)
         return {"ok": True, "backup": backup, "copied": copied, **res}

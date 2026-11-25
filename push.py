@@ -16,31 +16,42 @@ import subprocess
 import bridge
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PLATE = os.path.join(HERE, "assets", "plate.mp4")
+PLATE_DIR = os.path.join(HERE, "assets")
+PLATE = os.path.join(PLATE_DIR, "plate.mp4")
+PLATE_PREFIX = "plate"
+PLATE_SECS = 120
 TRACK_NAME = "SUBS"
 FOLDER_NAME = "SubLab"
 
 
 # --------------------------------------------------------------------------- plate
 
-def ensure_plate_media(media_pool, width=1080, height=1920, fps=24, secs=120):
-    """Importa (una volta) il clip nero usato come base invisibile dei sottotitoli."""
+def _plate_path(width: int, height: int, fps: int) -> str:
+    """Una plate per combinazione risoluzione/fps, cosi' 25/30/60fps non riusano la 24fps."""
+    return os.path.join(PLATE_DIR, f"{PLATE_PREFIX}_{int(width)}x{int(height)}_{int(fps)}fps.mp4")
+
+
+def ensure_plate_media(media_pool, width=1080, height=1920, fps=24, secs=PLATE_SECS):
+    """Importa (una volta per risoluzione/fps) il clip nero base dei sottotitoli."""
+    fps_i = max(1, int(round(fps)))
+    plate_path = _plate_path(width, height, fps_i)
+    plate_name = os.path.basename(plate_path)
     folder = _ensure_folder(media_pool)
     for clip in folder.GetClipList() or []:
-        if clip.GetName() == os.path.basename(PLATE):
+        if clip.GetName() == plate_name:
             return clip
-    if not os.path.exists(PLATE):
-        os.makedirs(os.path.dirname(PLATE), exist_ok=True)
+    if not os.path.exists(plate_path):
+        os.makedirs(os.path.dirname(plate_path), exist_ok=True)
         subprocess.run(["ffmpeg", "-y", "-f", "lavfi",
-                        "-i", f"color=c=black:s={width}x{height}:r={fps}:d={secs}",
+                        "-i", f"color=c=black:s={int(width)}x{int(height)}:r={fps_i}:d={int(secs)}",
                         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "51",
-                        "-pix_fmt", "yuv420p", PLATE], check=True, capture_output=True)
+                        "-pix_fmt", "yuv420p", plate_path], check=True, capture_output=True)
     media_pool.SetCurrentFolder(folder)
-    ok = media_pool.ImportMedia([PLATE])
+    ok = media_pool.ImportMedia([plate_path])
     if not ok:
         raise bridge.ResolveError("import della plate nel media pool fallito")
     for clip in media_pool.GetCurrentFolder().GetClipList() or []:
-        if clip.GetName() == os.path.basename(PLATE):
+        if clip.GetName() == plate_name:
             return clip
     raise bridge.ResolveError("plate importata ma non trovata nel media pool")
 
@@ -86,19 +97,19 @@ def clear_track(tl, idx: int) -> int:
     ours = [it for it in items if _is_ours(it)]
     if not ours:
         return 0
-    bridge.project().GetMediaPool().DeleteClips(ours, False)
+    # Timeline.DeleteClips rimuove i TimelineItem dalla timeline (non MediaPool.DeleteClips)
+    tl.DeleteClips(ours, False)
     return len(ours)
 
 
 def _is_ours(item) -> bool:
-    """Riconosce i clip creati da SubLab: hanno la plate come media."""
+    """Riconosce i clip creati da SubLab (sia vecchia plate.mp4 sia plate_WxH_FPSfps.mp4)."""
     try:
-        stem = os.path.splitext(os.path.basename(PLATE))[0].lower()
         name = (item.GetName() or "").lower()
-        if name.startswith(stem):
+        if name.startswith(PLATE_PREFIX):
             return True
         mp = item.GetMediaPoolItem()
-        return bool(mp) and (mp.GetName() or "").lower().startswith(stem)
+        return bool(mp) and (mp.GetName() or "").lower().startswith(PLATE_PREFIX)
     except Exception:
         return False
 
@@ -178,14 +189,20 @@ def merge_overlaps(cues: list[dict]) -> list[dict]:
     Senza questo, due AppendToTimeline a stesso recordFrame sulla stessa
     traccia si sovrappongono e ne sopravvive solo uno (Pillar 9, frame 771).
     """
+    ordered = sorted(cues, key=lambda c: (int(c["start"]), int(c["end"])))
     out: list[dict] = []
-    for c in cues:
-        if out and c["start"] < out[-1]["end"]:
+    for c in ordered:
+        c_copy = dict(c)
+        c_copy["start"] = int(c_copy["start"])
+        c_copy["end"] = int(c_copy["end"])
+        if out and c_copy["start"] < out[-1]["end"]:
             prev = out[-1]
-            prev["text"] = (prev["text"] + " " + c["text"]).strip()
-            prev["end"] = max(prev["end"], c["end"])
+            prev["text"] = (prev["text"] + " " + c_copy["text"]).strip()
+            prev["end"] = max(prev["end"], c_copy["end"])
+            if prev.get("words") or c_copy.get("words"):
+                prev["words"] = list(prev.get("words") or []) + list(c_copy.get("words") or [])
         else:
-            out.append(dict(c))
+            out.append(c_copy)
     return out
 
 
@@ -216,15 +233,18 @@ def push_cues(cues: list[dict], style: dict, track: int | None = None,
 
     removed = clear_track(tl, idx) if replace else 0
     media_pool = p.GetMediaPool()
+    fps_i = max(1, int(round(f)))
+    max_plate_frames = PLATE_SECS * fps_i
     plate = ensure_plate_media(media_pool, width=int(tl.GetSetting("timelineResolutionWidth") or 1080),
                                height=int(tl.GetSetting("timelineResolutionHeight") or 1920),
-                               fps=int(round(f)))
+                               fps=fps_i, secs=PLATE_SECS)
     p.SetCurrentTimeline(tl)
 
     made, errors = 0, []
+    created_pairs: list[tuple[object | None, dict]] = []
     for c in cues:
         start, end = int(c["start"]), int(c["end"])
-        dur = max(1, end - start)
+        dur = max(1, min(end - start, max_plate_frames))
         ok = media_pool.AppendToTimeline([{
             "mediaPoolItem": plate,
             "startFrame": 0,
@@ -236,14 +256,20 @@ def push_cues(cues: list[dict], style: dict, track: int | None = None,
             errors.append(f"cue @{start}: append fallito")
             continue
         made += 1
+        item = ok[0] if isinstance(ok, (list, tuple)) and ok else None
+        created_pairs.append((item, c))
 
-    # stile su tutti i clip appena creati
+    # Mappa esatta clip -> cue (mai zip posizionale: un append fallito non deve sfasare i testi)
     items = [it for it in (tl.GetItemListInTrack("video", idx) or []) if _is_ours(it)]
-    items.sort(key=lambda x: int(x.GetStart()))
+    by_start = {int(it.GetStart()): it for it in items}
     styled = 0
-    for item, c in zip(items, cues):
+    for item, c in created_pairs:
+        target = item if (item is not None and hasattr(item, "AddFusionComp")) else by_start.get(int(c["start"]))
+        if target is None:
+            errors.append(f"cue @{c['start']}: clip creato non ritrovato in timeline")
+            continue
         try:
-            _build_comp(item, c["text"], style)
+            _build_comp(target, c["text"], style)
             styled += 1
         except Exception as e:  # noqa: BLE001
             errors.append(f"cue @{c['start']}: {type(e).__name__} {e}")

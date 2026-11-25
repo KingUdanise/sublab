@@ -149,10 +149,10 @@ def build_cues(words: list[dict], max_chars: int = 38, max_dur: float = 2.6,
             flush()
     flush()
 
-    # niente cue sovrapposti
+    # niente cue sovrapposti: a["end"] non deve mai superare b["start"]
     for a, b in zip(cues, cues[1:]):
         if a["end"] > b["start"]:
-            a["end"] = max(a["start"] + min_dur, round(b["start"], 3))
+            a["end"] = round(max(a["start"] + 0.04, min(a["end"], b["start"])), 3)
 
     return _merge_tiny(cues, max_chars=max_chars)
 
@@ -201,7 +201,9 @@ def cue_frames(cues: list[dict], fps: float, offset: float = 0.0) -> list[dict]:
         for w in c.get("words", []):
             ws = int(round((w["s"] + offset) * fps))
             we = int(round((w["e"] + offset) * fps))
-            words.append({"w": w["w"], "s": max(s, min(ws, e - 1)), "e": max(ws + 1, min(we, e))})
+            ws_c = max(s, min(ws, e - 1))
+            we_c = max(ws_c + 1, min(we, e))
+            words.append({"w": w["w"], "s": ws_c, "e": we_c})
         out.append({"start": s, "end": e, "text": c["text"], "words": words})
     return out
 

@@ -3,16 +3,23 @@ from __future__ import annotations
 
 import os
 import re
-import winreg
+try:
+    import winreg
+except ImportError:  # pragma: no cover - ambienti non-Windows
+    winreg = None
 
 FONT_DIRS = [
     os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts"),
 ]
-REG_KEYS = [
-    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
-    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
-]
+REG_KEYS = (
+    [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+    ]
+    if winreg is not None
+    else []
+)
 FONT_EXT = (".ttf", ".otf", ".ttc", ".woff", ".woff2")
 STYLE_WORDS = ("Thin", "Light", "Regular", "Book", "Medium", "Semibold", "SemiBold", "Bold",
                "Black", "Heavy", "Italic", "Oblique", "Condensed", "Narrow", "Extended",
@@ -56,12 +63,19 @@ def _declared(path: str) -> tuple[str, str] | None:
         return None
 
 
+def _ensure_cache() -> list[dict]:
+    global _cache
+    if _cache is None:
+        _cache = installed()
+    return _cache
+
+
 def resolve_family(name: str | None) -> str | None:
     """'HelveticaNowDisplay' -> 'Helvetica Now Display' (nome che Fusion riconosce)."""
     if not name:
         return name
     key = norm(name)
-    for f in _cache or installed():
+    for f in _ensure_cache():
         if f["key"] == key:
             return f["family"]
     return name
@@ -71,7 +85,7 @@ def resolve_style(family: str | None, style: str | None) -> str | None:
     """Riporta lo stile a uno dei nomi dichiarati dalla famiglia (es. 'bold' -> 'Bold')."""
     if not family:
         return style
-    entry = next((f for f in (_cache or installed()) if norm(f["family"]) == norm(family)), None)
+    entry = next((f for f in _ensure_cache() if norm(f["family"]) == norm(family)), None)
     if entry is None:
         return style
     styles = entry["styles"]
@@ -164,11 +178,9 @@ _cache: list[dict] | None = None
 
 
 def catalog() -> list[dict]:
-    global _cache
-    if _cache is None:
-        _cache = installed()
+    items = _ensure_cache()
     return [{"family": f["family"], "key": f.get("key", norm(f["family"])),
-             "styles": f["styles"], "files": f["files"]} for f in _cache]
+             "styles": f["styles"], "files": f["files"]} for f in items]
 
 
 def font_file(filename: str) -> str | None:
