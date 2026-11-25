@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# output e build (restano in locale)
+out/
+dist/
+wip/
+_diag.log
+_diag.err
+*.log
+
+# segreti
+.env
+.env.*

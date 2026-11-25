@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SubLab · sottotitoli per DaVinci Resolve</title>
+<meta name="description" content="Sottotitoli con stile unico e preview vera dentro DaVinci Resolve." />
+<link rel="icon" href="/icon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/fonts.css" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<a class="skip" href="#cues">Vai all'elenco dei sottotitoli</a>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span> SubLab</div>
+  <div class="ctx" id="ctx">connessione a Resolve…</div>
+  <div class="spacer"></div>
+  <div class="pill" id="pill-range">range —</div>
+</header>
+
+<main class="layout">
+  <!-- ---------------------------------------------------------------- sinistra -->
+  <section class="col col-left">
+    <div class="card">
+      <h2>Trascrizione</h2>
+      <div class="row">
+        <label>Da sottotitolare</label>
+        <select id="range-mode">
+          <option value="io">In/Out della timeline</option>
+          <option value="selection">Clip selezionate</option>
+          <option value="all">Tutta la timeline</option>
+        </select>
+      </div>
+      <div class="hint" id="range-hint">—</div>
+      <div class="row">
+        <label>Modello</label>
+        <select id="model">
+          <option value="large-v3">large-v3 (migliore)</option>
+          <option value="medium">medium</option>
+          <option value="small">small</option>
+          <option value="base">base (veloce)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Lingua</label>
+        <select id="language">
+          <option value="it">Italiano</option>
+          <option value="en">Inglese</option>
+          <option value="">Auto</option>
+        </select>
+      </div>
+      <div class="row two">
+        <div><label>Max caratteri</label><input id="max-chars" type="number" min="12" max="80" value="38" /></div>
+        <div><label>Max durata (s)</label><input id="max-dur" type="number" min="0.8" max="8" step="0.1" value="2.6" /></div>
+      </div>
+      <button class="primary" id="btn-transcribe">Trascrivi</button>
+      <div class="progress"><div id="bar"></div></div>
+      <pre class="log" id="log"></pre>
+    </div>
+
+    <div class="card grow">
+      <h2>Sottotitoli <span class="badge" id="cue-count">0</span></h2>
+      <div class="cues-head">
+        <button class="mini" id="sel-all">tutti</button>
+        <button class="mini" id="sel-none">nessuno</button>
+        <span class="hint" id="sel-info"></span>
+      </div>
+      <div class="cues" id="cues"></div>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- centro -->
+  <section class="col col-center">
+    <div class="stage">
+      <canvas id="preview" width="1080" height="1920"></canvas>
+    </div>
+    <div class="stagerow">
+      <button class="mini" id="btn-still" title="carica un frame dalla timeline">frame da Resolve</button>
+      <button class="mini" id="btn-safe">safezone</button>
+      <label class="mini switch"><input type="checkbox" id="reveal-anim" checked /> reveal parole</label>
+      <span class="hint" id="preview-info"></span>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btn-apply-all" disabled>Applica a tutti i sottotitoli</button>
+      <button id="btn-apply-sel" disabled>Applica ai selezionati</button>
+      <label class="mini switch" title="crea una copia della timeline e inserisce i sottotitoli lì">
+        <input type="checkbox" id="push-copy" checked /> su una copia
+      </label>
+      <button class="ghost" id="btn-push" disabled>Push in DaVinci</button>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- destra -->
+  <section class="col col-right">
+    <div class="card grow">
+      <h2>Stile</h2>
+      <div class="row"><label>Font</label><select id="font"></select></div>
+      <div class="row"><label>Stile font</label><select id="font-style"></select></div>
+      <div class="row"><label>Dimensione <b id="v-size"></b></label>
+        <input id="size" type="range" min="0.015" max="0.25" step="0.001" /></div>
+      <div class="row two">
+        <div><label>X <b id="v-cx"></b></label><input id="cx" type="range" min="0" max="1" step="0.005" /></div>
+        <div><label>Y <b id="v-cy"></b></label><input id="cy" type="range" min="0" max="1" step="0.005" /></div>
+      </div>
+
+      <h3>Fill</h3>
+      <div class="row inline"><input type="checkbox" id="fill-on" /><input type="color" id="fill" /><span class="hint" id="v-fill"></span></div>
+
+      <h3>Outline</h3>
+      <div class="row inline"><input type="checkbox" id="outline-on" /><input type="color" id="outline" />
+        <input id="outline-t" type="range" min="0" max="0.12" step="0.001" /><span class="hint" id="v-outline-t"></span></div>
+
+      <h3>Shadow / Glow</h3>
+      <div class="row inline"><input type="checkbox" id="shadow-on" /><input type="color" id="shadow" /></div>
+
+      <h3>Highlighter</h3>
+      <div class="row inline"><input type="checkbox" id="hl-on" /><input type="color" id="highlight" />
+        <span class="hint">parola in evidenza</span></div>
+
+      <p class="note">Le modifiche si applicano <b>senza bottone “Update”</b>: quando premi
+        <b>Applica</b> scrivo direttamente gli input della Fusion Text+.</p>
+    </div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
